@@ -6,6 +6,7 @@ import time
 import uuid
 from pathlib import Path
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -94,7 +95,7 @@ class ModernTranscriberApp(ctk.CTk):
         self.hotkey_error = ""
         self.current_page = ""
         self.float_window: tk.Toplevel | None = None
-        self.float_label: tk.Label | None = None
+        self.float_canvas: tk.Canvas | None = None
         self.float_status = "模型加载中"
         self.target_hwnd = 0
         self.last_external_hwnd = 0
@@ -359,8 +360,7 @@ class ModernTranscriberApp(ctk.CTk):
         else:
             self.float_window.deiconify()
             self.float_window.lift()
-        if self.float_label:
-            self.float_label.configure(text=self.float_status)
+            self._update_float_text()
 
     def _hide_float(self) -> None:
         if self.float_window and self.float_window.winfo_exists():
@@ -369,35 +369,58 @@ class ModernTranscriberApp(ctk.CTk):
     def _destroy_float(self) -> None:
         if self.float_window and self.float_window.winfo_exists():
             self.float_window.destroy()
-            self.float_window = None
-            self.float_label = None
+        self.float_window = None
+        self.float_canvas = None
 
     def _create_float(self) -> None:
         if not self.config_data.show_floating_indicator or self.float_window is not None:
             return
-        # 外层窗口：作为边框
+
+        TRANSPARENT = "#010101"
+        PILL_BG = "#1a1a1e"
+        PILL_OUTLINE = "#2a2a30"
+        HEIGHT = 40
+        MIN_WIDTH = 120
+        PADDING_X = 18
+        ICON_W = 50
+
+        # 初始文本与时间状态共用一段字体
+        font = tkfont.Font(family="Microsoft YaHei UI", size=12, weight="bold")
+        text = "00:00"
+        text_w = font.measure(text) + PADDING_X * 2 + ICON_W
+        width = max(MIN_WIDTH, text_w)
+
         win = tk.Toplevel()
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.attributes("-toolwindow", True)
-        win.configure(bg="#3a3f5c")  # 边框颜色
-        win.wm_attributes("-alpha", 0.96)
+        win.configure(bg=TRANSPARENT)
+        win.wm_attributes("-transparentcolor", TRANSPARENT)
 
-        # 内层 Frame：主背景 + 圆角效果（通过 padx/pady 模拟边框厚度）
-        inner = tk.Frame(win, bg="#0d0f1a", padx=1, pady=1)
-        inner.pack()
+        canvas = tk.Canvas(win, width=width, height=HEIGHT, bg=TRANSPARENT, highlightthickness=0)
+        canvas.pack()
 
-        self.float_label = tk.Label(
-            inner,
-            bg="#0d0f1a",
-            fg="#d4d8f0",
-            padx=20,
-            pady=9,
-            font=("Microsoft YaHei UI", 11, "bold"),
-        )
-        self.float_label.pack()
+        r = 18
+        # 圆角胶囊背景
+        self._float_pill_id = self._create_rounded_rect(canvas, 2, 2, width - 2, HEIGHT - 2, r, fill=PILL_BG, outline=PILL_OUTLINE, width=1)
+
+        # 录音图标：左侧圆点 + 两个竖条
+        dot_color = "#ff3b30"
+        self._float_dot_id = canvas.create_oval(18, 14, 26, 22, fill=dot_color, outline="")
+        self._float_bar1_id = canvas.create_rectangle(32, 11, 36, 29, fill=dot_color, outline="", width=0)
+        self._float_bar2_id = canvas.create_rectangle(40, 11, 44, 29, fill=dot_color, outline="", width=0)
+
+        # 文本
+        self._float_text_id = canvas.create_text(ICON_W, HEIGHT // 2, text=text, fill="#ffffff", font=font, anchor="w")
+
         self.float_window = win
-        self.float_inner = inner
+        self.float_canvas = canvas
+        self._float_font = font
+        self._float_width = width
+        self._float_height = HEIGHT
+        self._float_min_width = MIN_WIDTH
+        self._float_padding_x = PADDING_X
+        self._float_icon_w = ICON_W
 
         # 拖拽支持
         self._drag_data = {"x": 0, "y": 0, "dragging": False}
@@ -424,10 +447,8 @@ class ModernTranscriberApp(ctk.CTk):
         def on_up(event):
             was_dragging = self._drag_data["dragging"]
             if not was_dragging:
-                # 点击 — 切换录音
                 self.toggle_recording()
             else:
-                # 拖拽结束，保存位置到配置文件
                 try:
                     from yuyin_zhuanxie.config import save_config
                     save_config(self.config_data)
@@ -435,18 +456,31 @@ class ModernTranscriberApp(ctk.CTk):
                     pass
             self._drag_data["dragging"] = False
 
-        self.float_label.bind("<Button-1>", on_down)
-        self.float_label.bind("<B1-Motion>", on_move)
-        self.float_label.bind("<ButtonRelease-1>", on_up)
+        canvas.bind("<Button-1>", on_down)
+        canvas.bind("<B1-Motion>", on_move)
+        canvas.bind("<ButtonRelease-1>", on_up)
         win.bind("<Button-1>", on_down)
         win.bind("<B1-Motion>", on_move)
         win.bind("<ButtonRelease-1>", on_up)
 
         win.geometry(f"+{self.config_data.float_x}+{self.config_data.float_y}")
         win.lift()
-        self.float_window = win
         self._update_float_text()
         self._float_poll()
+
+    @staticmethod
+    def _rounded_rect_points(x1, y1, x2, y2, radius):
+        return [
+            x1 + radius, y1, x2 - radius, y1, x2, y1, x2, y1 + radius,
+            x2, y2 - radius, x2, y2, x2 - radius, y2, x1 + radius, y2,
+            x1, y2, x1, y2 - radius, x1, y1 + radius, x1, y1,
+        ]
+
+    @staticmethod
+    def _create_rounded_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
+        """用 Canvas 绘制圆角矩形。"""
+        points = ModernMainWindow._rounded_rect_points(x1, y1, x2, y2, radius)
+        return canvas.create_polygon(points, smooth=True, **kwargs)
 
     def _float_poll(self) -> None:
         """定期刷新悬浮窗文字（只在录音期间有内容变化）"""
@@ -456,35 +490,61 @@ class ModernTranscriberApp(ctk.CTk):
         self.float_window.after(250 if self.recording else 500, self._float_poll)
 
     def _update_float_text(self) -> None:
-        if self.float_label is None or self.float_window is None:
+        if self.float_canvas is None or self.float_window is None:
             return
+        if not self.float_window.winfo_exists():
+            return
+
         if self.recording:
             elapsed = int(time.time() - self.started_at)
-            text = f"  {elapsed // 60:02d}:{elapsed % 60:02d}"
-            fg = "#ff5c6a"
-            bg = "#0d0f1a"
-            border = "#4a1020"
+            text = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+            icon_color = "#ff3b30"
+            text_color = "#ff3b30"
         else:
-            text = self.float_status
-            fg = "#d4d8f0"
-            bg = "#0d0f1a"
-            border = "#3a3f5c"
-            if "待命" in text or "|" in text:
-                fg = "#38d27a"
-                border = "#1a3a2a"
-            elif "加载" in text or "转写" in text or "DeepSeek" in text or "优化" in text:
-                fg = "#ffcc66"
-                bg = "#0a2040"
-                border = "#4a6fa5"
-            elif "失败" in text or "跳过" in text:
-                fg = "#ff6b6b"
-                bg = "#1a0a0a"
-                border = "#5a1a1a"
-        self.float_label.configure(text=text, fg=fg)
-        if self.float_window.winfo_exists():
-            self.float_window.configure(bg=border)
-            self.float_inner.configure(bg=bg)
-            self.float_label.configure(bg=bg)
+            status = self.float_status
+            if "录音失败" in status or "失败" in status or "跳过" in status or "粘贴失败" in status:
+                text = "失败"
+                icon_color = "#ff3b30"
+                text_color = "#ff3b30"
+            elif "转写" in status or "加载" in status or "DeepSeek" in status or "优化" in status:
+                text = "优化中" if "优化" in status or "DeepSeek" in status else "转写中"
+                icon_color = "#ffcc66"
+                text_color = "#ffcc66"
+            elif "完成" in status or "已粘贴" in status or "待命" in status or "|" in status:
+                text = "完成" if "完成" in status or "已粘贴" in status else "待命"
+                icon_color = "#38d27a"
+                text_color = "#38d27a"
+            else:
+                text = status
+                icon_color = "#d4d8f0"
+                text_color = "#d4d8f0"
+
+        pill_bg = "#1a1a1e"
+        pill_border = "#2a2a30"
+
+        # 根据文字宽度动态调整胶囊长度
+        text_w = self._float_font.measure(text)
+        width = max(self._float_min_width, self._float_icon_w + text_w + self._float_padding_x * 2)
+        height = self._float_height
+
+        # 重新调整窗口和 canvas 大小
+        self._float_width = width
+        self.float_canvas.config(width=width, height=height)
+        self.float_window.geometry(f"{width}x{height}+{self.config_data.float_x}+{self.config_data.float_y}")
+
+        # 更新圆角矩形大小
+        points = self._rounded_rect_points(2, 2, width - 2, height - 2, 18)
+        self.float_canvas.coords(self._float_pill_id, *points)
+        self.float_canvas.itemconfig(self._float_pill_id, fill=pill_bg, outline=pill_border)
+
+        # 更新图标颜色
+        self.float_canvas.itemconfig(self._float_dot_id, fill=icon_color)
+        self.float_canvas.itemconfig(self._float_bar1_id, fill=icon_color)
+        self.float_canvas.itemconfig(self._float_bar2_id, fill=icon_color)
+
+        # 更新文字内容与颜色
+        self.float_canvas.itemconfig(self._float_text_id, text=text, fill=text_color)
+        self.float_canvas.coords(self._float_text_id, self._float_icon_w, height // 2)
 
     # ------------------------------------------------------------------
     # 热键系统（支持多快捷键绑定不同提示词）
