@@ -18,7 +18,7 @@ from .deepseek import polish_text
 from .history import append_history
 from .recorder import AudioRecorder
 from .text_tools import choose_output, normalize_text
-from .winfocus import get_cursor_position, get_foreground_window, is_own_window, paste_to_window
+from .winfocus import get_foreground_window, is_own_window, paste_to_window
 
 
 ctk.set_appearance_mode("light")
@@ -97,7 +97,6 @@ class ModernTranscriberApp(ctk.CTk):
         self.float_label: tk.Label | None = None
         self.float_status = "模型加载中"
         self.target_hwnd = 0
-        self.target_cursor_pos: tuple[int, int] | None = None
         self.last_external_hwnd = 0
         self.own_pid = os.getpid()
         self.provider_index = 0
@@ -376,22 +375,29 @@ class ModernTranscriberApp(ctk.CTk):
     def _create_float(self) -> None:
         if not self.config_data.show_floating_indicator or self.float_window is not None:
             return
+        # 外层窗口：作为边框
         win = tk.Toplevel()
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.attributes("-toolwindow", True)
-        win.configure(bg="#05070c")
+        win.configure(bg="#3a3f5c")  # 边框颜色
         win.wm_attributes("-alpha", 0.96)
 
+        # 内层 Frame：主背景 + 圆角效果（通过 padx/pady 模拟边框厚度）
+        inner = tk.Frame(win, bg="#0d0f1a", padx=1, pady=1)
+        inner.pack()
+
         self.float_label = tk.Label(
-            win,
-            bg="#05070c",
-            fg="#ffffff",
-            padx=18,
-            pady=10,
+            inner,
+            bg="#0d0f1a",
+            fg="#d4d8f0",
+            padx=20,
+            pady=9,
             font=("Microsoft YaHei UI", 11, "bold"),
         )
         self.float_label.pack()
+        self.float_window = win
+        self.float_inner = inner
 
         # 拖拽支持
         self._drag_data = {"x": 0, "y": 0, "dragging": False}
@@ -455,23 +461,29 @@ class ModernTranscriberApp(ctk.CTk):
         if self.recording:
             elapsed = int(time.time() - self.started_at)
             text = f"  {elapsed // 60:02d}:{elapsed % 60:02d}"
-            fg = "#ff4d5a"
-            bg = "#05070c"
+            fg = "#ff5c6a"
+            bg = "#0d0f1a"
+            border = "#4a1020"
         else:
             text = self.float_status
-            fg = "#ffffff"
-            bg = "#05070c"
+            fg = "#d4d8f0"
+            bg = "#0d0f1a"
+            border = "#3a3f5c"
             if "待命" in text or "|" in text:
                 fg = "#38d27a"
+                border = "#1a3a2a"
             elif "加载" in text or "转写" in text or "DeepSeek" in text or "优化" in text:
                 fg = "#ffcc66"
-                bg = "#0a3278"  # 优化中：深蓝色背景
+                bg = "#0a2040"
+                border = "#4a6fa5"
             elif "失败" in text or "跳过" in text:
                 fg = "#ff6b6b"
-                bg = "#3a0a0a"
+                bg = "#1a0a0a"
+                border = "#5a1a1a"
         self.float_label.configure(text=text, fg=fg)
         if self.float_window.winfo_exists():
-            self.float_window.configure(bg=bg)
+            self.float_window.configure(bg=border)
+            self.float_inner.configure(bg=bg)
             self.float_label.configure(bg=bg)
 
     # ------------------------------------------------------------------
@@ -553,7 +565,6 @@ class ModernTranscriberApp(ctk.CTk):
             return
         try:
             self.target_hwnd = self.choose_target_window()
-            self.target_cursor_pos = get_cursor_position()
             self.recorder.start()
             self.recording = True
             self.started_at = time.time()
@@ -656,7 +667,7 @@ class ModernTranscriberApp(ctk.CTk):
             widget.insert("1.0", value)
 
     def send_paste(self) -> None:
-        if paste_to_window(self.target_hwnd, cursor_pos=self.target_cursor_pos):
+        if paste_to_window(self.target_hwnd):
             self.set_runtime_state("已粘贴")
         else:
             self.set_runtime_state("自动粘贴失败")

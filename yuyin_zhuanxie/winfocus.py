@@ -62,16 +62,18 @@ def click_current_mouse_position() -> None:
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
-def paste_to_window(hwnd: int, click_mouse_position: bool = True, cursor_pos: tuple[int, int] | None = None) -> bool:
+def paste_to_window(hwnd: int) -> bool:
+    """
+    聚焦目标窗口后直接 Ctrl+V。
+    - 未选中文字 → 在光标位置插入
+    - 已选中文字 → 替换选中内容
+    不做 Ctrl+End，不强制跳到文档末尾。
+    """
     if hwnd:
         set_foreground_window(hwnd)
-    time.sleep(0.12)
+    time.sleep(0.15)
     try:
         import keyboard
-
-        # 先跳到文档末尾（Ctrl+End），保证粘贴在最后面，不删除原文
-        keyboard.send("ctrl+end")
-        time.sleep(0.06)
         keyboard.send("ctrl+v")
         return True
     except Exception:
