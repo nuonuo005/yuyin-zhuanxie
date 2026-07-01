@@ -345,7 +345,11 @@ class ModernTranscriberApp(ctk.CTk):
         if not self.config_data.show_floating_indicator:
             self._hide_float()
             return
-        if self.recording:
+        # 录音中、或正在转写/优化时均保持显示
+        busy = self.recording or any(
+            k in self.float_status for k in ("转写", "DeepSeek", "优化", "加载", "本地转写")
+        )
+        if busy:
             self._show_float()
         else:
             self._hide_float()
@@ -412,9 +416,17 @@ class ModernTranscriberApp(ctk.CTk):
                 self.config_data.float_y = y
 
         def on_up(event):
-            if not self._drag_data["dragging"]:
+            was_dragging = self._drag_data["dragging"]
+            if not was_dragging:
                 # 点击 — 切换录音
                 self.toggle_recording()
+            else:
+                # 拖拽结束，保存位置到配置文件
+                try:
+                    from yuyin_zhuanxie.config import save_config
+                    save_config(self.config_data)
+                except Exception:
+                    pass
             self._drag_data["dragging"] = False
 
         self.float_label.bind("<Button-1>", on_down)
@@ -438,22 +450,29 @@ class ModernTranscriberApp(ctk.CTk):
         self.float_window.after(250 if self.recording else 500, self._float_poll)
 
     def _update_float_text(self) -> None:
-        if self.float_label is None:
+        if self.float_label is None or self.float_window is None:
             return
         if self.recording:
             elapsed = int(time.time() - self.started_at)
             text = f"  {elapsed // 60:02d}:{elapsed % 60:02d}"
             fg = "#ff4d5a"
+            bg = "#05070c"
         else:
             text = self.float_status
             fg = "#ffffff"
+            bg = "#05070c"
             if "待命" in text or "|" in text:
                 fg = "#38d27a"
-            elif "加载" in text or "转写" in text or "DeepSeek" in text:
+            elif "加载" in text or "转写" in text or "DeepSeek" in text or "优化" in text:
                 fg = "#ffcc66"
+                bg = "#0a3278"  # 优化中：深蓝色背景
             elif "失败" in text or "跳过" in text:
                 fg = "#ff6b6b"
+                bg = "#3a0a0a"
         self.float_label.configure(text=text, fg=fg)
+        if self.float_window.winfo_exists():
+            self.float_window.configure(bg=bg)
+            self.float_label.configure(bg=bg)
 
     # ------------------------------------------------------------------
     # 热键系统（支持多快捷键绑定不同提示词）
