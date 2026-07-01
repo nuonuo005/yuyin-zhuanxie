@@ -1,0 +1,23 @@
+[project]
+name = "yuyin-zhuanxie"
+version = "0.1.0"
+description = "Local Chinese speech transcription plus DeepSeek polishing."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "requests>=2.31.0",
+  "funasr-onnx>=0.4.1",
+  "modelscope>=1.17.0",
+  "onnxruntime>=1.17.0",
+  "numpy<=1.26.4",
+  "sounddevice>=0.4.6",
+  "keyboard>=0.13.5",
+  "customtkinter>=5.2.2"
+]
+
+[project.scripts]
+yuyin-zhuanxie = "yuyin_zhuanxie.cli:main"
+
+[tool.setuptools]
+packages = ["yuyin_zhuanxie"]

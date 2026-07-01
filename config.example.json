@@ -1,0 +1,47 @@
+{
+  "deepseek_api_key": "",
+  "deepseek_base_url": "https://api.deepseek.com/v1",
+  "deepseek_model": "deepseek-chat",
+  "model_root": ".local_models/iic",
+  "copy_result_to_clipboard": true,
+  "save_history": true,
+  "system_prompt": "你是一个中文口语整理助手。请严格保留用户原意，不新增事实，不改变人称。把口语化、重复、停顿和错别字整理成自然、准确、可直接发送的书面中文。只输出最终文本。",
+  "ai_provider": "deepseek",
+  "active_prompt_id": "formal",
+  "hotkey": "F2",
+  "hold_to_record": true,
+  "show_floating_indicator": true,
+  "auto_paste": false,
+  "start_minimized": false,
+  "smart_numbers": false,
+  "filter_filler_words": true,
+  "strip_trailing_punctuation": false,
+  "keep_raw_clipboard": false,
+  "enable_ai_polish": true,
+  "output_mode": "polished",
+  "providers": [
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "api_key": ""
+    }
+  ],
+  "prompts": [
+    {
+      "id": "formal",
+      "name": "书面整理",
+      "tag": "内置",
+      "prompt": "你是一个中文口语整理助手。请严格保留用户原意，不新增事实，不改变人称。把口语化、重复、停顿和错别字整理成自然、准确、可直接发送的书面中文。只输出最终文本。"
+    }
+  ],
+  "replacement_rules": [
+    {
+      "from": "f二",
+      "to": "F2",
+      "enabled": true
+    }
+  ],
+  "glossary": []
+}

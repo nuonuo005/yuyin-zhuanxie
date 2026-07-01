@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.local_models/
+config.json
+history.jsonl
+*.wav
+*.mp3
+*.m4a
+*.flac
+dist/
+build/
+*.egg-info/

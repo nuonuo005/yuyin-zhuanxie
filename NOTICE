@@ -1,0 +1,21 @@
+Language Transcriber / 语言转写
+
+This project does not copy or redistribute VocoType proprietary code.
+
+The local speech models used by this project are expected to come from the
+public FunASR / ModelScope model repositories. If you copy already-downloaded
+models from your local machine, keep the original model names and source notice.
+
+Known local model names:
+- iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx
+- iic/speech_fsmn_vad_zh-cn-16k-common-onnx
+- iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx
+
+FunASR source:
+https://github.com/modelscope/FunASR
+
+FunASR model license:
+https://raw.githubusercontent.com/modelscope/FunASR/main/MODEL_LICENSE
+
+DeepSeek is accessed through an OpenAI-compatible HTTP API. Users must provide
+their own API key and comply with DeepSeek's terms.
