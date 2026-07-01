@@ -65,15 +65,13 @@ def click_current_mouse_position() -> None:
 def paste_to_window(hwnd: int, click_mouse_position: bool = True, cursor_pos: tuple[int, int] | None = None) -> bool:
     if hwnd:
         set_foreground_window(hwnd)
-    time.sleep(0.15)
-    if click_mouse_position:
-        if cursor_pos:
-            set_cursor_position(cursor_pos[0], cursor_pos[1])
-        click_current_mouse_position()
-        time.sleep(0.08)
+    time.sleep(0.12)
     try:
         import keyboard
 
+        # 先跳到文档末尾（Ctrl+End），保证粘贴在最后面，不删除原文
+        keyboard.send("ctrl+end")
+        time.sleep(0.06)
         keyboard.send("ctrl+v")
         return True
     except Exception:

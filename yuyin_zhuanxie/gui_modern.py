@@ -353,6 +353,11 @@ class ModernTranscriberApp(ctk.CTk):
     def _show_float(self) -> None:
         if self.float_window is None or not self.float_window.winfo_exists():
             self._create_float()
+        else:
+            self.float_window.deiconify()
+            self.float_window.lift()
+        if self.float_label:
+            self.float_label.configure(text=self.float_status)
 
     def _hide_float(self) -> None:
         if self.float_window and self.float_window.winfo_exists():
