@@ -88,6 +88,8 @@ class AppConfig:
     output_mode: str = "polished"
     float_x: int | None = None
     float_y: int | None = None
+    float_size: str = "medium"
+    float_style: str = "minimal"
     providers: list[dict] = field(default_factory=list)
     prompts: list[dict] = field(default_factory=list)
     replacement_rules: list[dict] = field(default_factory=list)

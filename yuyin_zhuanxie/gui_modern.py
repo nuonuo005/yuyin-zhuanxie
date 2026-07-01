@@ -6,7 +6,6 @@ import time
 import uuid
 from pathlib import Path
 import tkinter as tk
-import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -95,7 +94,8 @@ class ModernTranscriberApp(ctk.CTk):
         self.hotkey_error = ""
         self.current_page = ""
         self.float_window: tk.Toplevel | None = None
-        self.float_canvas: tk.Canvas | None = None
+        self.float_label: tk.Label | None = None
+        self.float_photo: tk.PhotoImage | None = None
         self.float_status = "模型加载中"
         self.target_hwnd = 0
         self.last_external_hwnd = 0
@@ -258,7 +258,7 @@ class ModernTranscriberApp(ctk.CTk):
         self.status_label_text.grid(row=0, column=1, sticky="e")
 
         self.content = ctk.CTkFrame(self.main, fg_color="transparent")
-        self.content.grid(row=1, column=0, sticky="nsew", padx=28, pady=(4, 24))
+        self.content.grid(row=1, column=0, sticky="nsew", padx=28, pady=4)
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(0, weight=1)
 
@@ -370,59 +370,30 @@ class ModernTranscriberApp(ctk.CTk):
         if self.float_window and self.float_window.winfo_exists():
             self.float_window.destroy()
         self.float_window = None
-        self.float_canvas = None
+        self.float_label = None
+        self.float_photo = None
 
     def _create_float(self) -> None:
         if not self.config_data.show_floating_indicator or self.float_window is not None:
             return
 
-        TRANSPARENT = "#010101"
-        PILL_BG = "#1a1a1e"
-        PILL_OUTLINE = "#2a2a30"
-        HEIGHT = 40
-        MIN_WIDTH = 120
-        PADDING_X = 18
-        ICON_W = 50
-
-        # 初始文本与时间状态共用一段字体
-        font = tkfont.Font(family="Microsoft YaHei UI", size=12, weight="bold")
-        text = "00:00"
-        text_w = font.measure(text) + PADDING_X * 2 + ICON_W
-        width = max(MIN_WIDTH, text_w)
+        fx = self.config_data.float_x if isinstance(self.config_data.float_x, int) else 1200
+        fy = self.config_data.float_y if isinstance(self.config_data.float_y, int) else 80
 
         win = tk.Toplevel()
         win.overrideredirect(True)
         win.attributes("-topmost", True)
-        win.attributes("-toolwindow", True)
-        win.configure(bg=TRANSPARENT)
-        win.wm_attributes("-transparentcolor", TRANSPARENT)
-
-        canvas = tk.Canvas(win, width=width, height=HEIGHT, bg=TRANSPARENT, highlightthickness=0)
-        canvas.pack()
-
-        r = 18
-        # 圆角胶囊背景
-        self._float_pill_id = self._create_rounded_rect(canvas, 2, 2, width - 2, HEIGHT - 2, r, fill=PILL_BG, outline=PILL_OUTLINE, width=1)
-
-        # 录音图标：左侧圆点 + 两个竖条
-        dot_color = "#ff3b30"
-        self._float_dot_id = canvas.create_oval(18, 14, 26, 22, fill=dot_color, outline="")
-        self._float_bar1_id = canvas.create_rectangle(32, 11, 36, 29, fill=dot_color, outline="", width=0)
-        self._float_bar2_id = canvas.create_rectangle(40, 11, 44, 29, fill=dot_color, outline="", width=0)
-
-        # 文本
-        self._float_text_id = canvas.create_text(ICON_W, HEIGHT // 2, text=text, fill="#ffffff", font=font, anchor="w")
+        win.wm_attributes("-alpha", 0.98)
+        # 用纯黑作透明色，图片外部像素必须是 #000000 才能透掉
+        win.configure(bg="#000000")
+        try:
+            win.attributes("-transparentcolor", "#000000")
+        except Exception:
+            pass
 
         self.float_window = win
-        self.float_canvas = canvas
-        self._float_font = font
-        self._float_width = width
-        self._float_height = HEIGHT
-        self._float_min_width = MIN_WIDTH
-        self._float_padding_x = PADDING_X
-        self._float_icon_w = ICON_W
-
-        # 拖拽支持
+        self.float_label = tk.Label(win, bg="#000000", bd=0)
+        self.float_label.pack()
         self._drag_data = {"x": 0, "y": 0, "dragging": False}
 
         def on_down(event):
@@ -431,7 +402,7 @@ class ModernTranscriberApp(ctk.CTk):
             self._drag_data["dragging"] = False
 
         def on_move(event):
-            if win is None or not win.winfo_exists():
+            if not win.winfo_exists():
                 return
             dx = event.x - self._drag_data["x"]
             dy = event.y - self._drag_data["y"]
@@ -445,8 +416,7 @@ class ModernTranscriberApp(ctk.CTk):
                 self.config_data.float_y = y
 
         def on_up(event):
-            was_dragging = self._drag_data["dragging"]
-            if not was_dragging:
+            if not self._drag_data["dragging"]:
                 self.toggle_recording()
             else:
                 try:
@@ -456,31 +426,105 @@ class ModernTranscriberApp(ctk.CTk):
                     pass
             self._drag_data["dragging"] = False
 
-        canvas.bind("<Button-1>", on_down)
-        canvas.bind("<B1-Motion>", on_move)
-        canvas.bind("<ButtonRelease-1>", on_up)
-        win.bind("<Button-1>", on_down)
-        win.bind("<B1-Motion>", on_move)
-        win.bind("<ButtonRelease-1>", on_up)
+        self.float_label.bind("<Button-1>", on_down)
+        self.float_label.bind("<B1-Motion>", on_move)
+        self.float_label.bind("<ButtonRelease-1>", on_up)
 
-        win.geometry(f"+{self.config_data.float_x}+{self.config_data.float_y}")
         win.lift()
         self._update_float_text()
         self._float_poll()
 
-    @staticmethod
-    def _rounded_rect_points(x1, y1, x2, y2, radius):
-        return [
-            x1 + radius, y1, x2 - radius, y1, x2, y1, x2, y1 + radius,
-            x2, y2 - radius, x2, y2, x2 - radius, y2, x1 + radius, y2,
-            x1, y2, x1, y2 - radius, x1, y1 + radius, x1, y1,
-        ]
+    def _float_size(self) -> tuple[int, int, int, int, int]:
+        """返回 (高度, 字体大小, 内边距, 圆点半径, 竖条高度)"""
+        size = self.config_data.float_size
+        if size == "small":
+            return 30, 12, 9, 4, 10
+        if size == "large":
+            return 40, 15, 13, 6, 15
+        return 34, 13, 11, 5, 12
 
-    @staticmethod
-    def _create_rounded_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
-        """用 Canvas 绘制圆角矩形。"""
-        points = ModernMainWindow._rounded_rect_points(x1, y1, x2, y2, radius)
-        return canvas.create_polygon(points, smooth=True, **kwargs)
+    def _float_font(self, font_size: int):
+        from PIL import ImageFont
+        if not hasattr(self, "_float_font_cache"):
+            self._float_font_cache = {}
+        if font_size in self._float_font_cache:
+            return self._float_font_cache[font_size]
+        candidates = [
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/msyhbd.ttc",
+            "C:/Windows/Fonts/simhei.ttf",
+            "C:/Windows/Fonts/simsun.ttc",
+            "C:/Windows/Fonts/segoeui.ttf",
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                try:
+                    font = ImageFont.truetype(path, font_size)
+                    self._float_font_cache[font_size] = font
+                    return font
+                except Exception:
+                    pass
+        font = ImageFont.load_default()
+        self._float_font_cache[font_size] = font
+        return font
+
+    def _render_float_pill(self, text: str, icon_color: str, text_color: str, bg_color: str, border_color: str) -> tk.PhotoImage:
+        from PIL import Image, ImageDraw, ImageTk
+
+        H, font_size, pad, dot_r, bar_h = self._float_size()
+        radius = H // 2
+        font = self._float_font(font_size)
+
+        try:
+            bbox = font.getbbox(text)
+            text_w = int(bbox[2] - bbox[0]) if bbox else 40
+        except Exception:
+            text_w = 40
+
+        # 图标区：圆点 + 波形/竖条 + 间距
+        icon_w = dot_r * 2 + 8 + (20 if self.config_data.float_style == "wave" else 12)
+        W = max(120, pad + icon_w + text_w + pad)
+
+        # 外部全透明黑，配合窗口透明色实现圆角
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # 背景胶囊
+        draw.rounded_rectangle([0, 0, W - 1, H - 1], radius=radius, fill=bg_color, outline=border_color, width=1)
+
+        # 红色圆点
+        dot_x = pad + dot_r
+        dot_y = H // 2
+        draw.ellipse([dot_x - dot_r, dot_y - dot_r, dot_x + dot_r, dot_y + dot_r], fill=icon_color)
+
+        # 中间图标
+        icon_x = dot_x + dot_r + 8
+        if self.config_data.float_style == "wave":
+            bar_w = 2
+            gap = 2
+            for i in range(5):
+                import math
+                phase = time.time() * 8 + i * 1.2
+                h = int((math.sin(phase) * 0.5 + 0.5) * (H * 0.42)) + 4
+                h = max(4, min(h, H - 8))
+                x = icon_x + i * (bar_w + gap)
+                y = (H - h) // 2
+                draw.rounded_rectangle([x, y, x + bar_w, y + h], radius=bar_w // 2, fill=icon_color)
+        else:
+            bar_w = 2
+            gap = 3
+            for i in range(2):
+                x = icon_x + i * (bar_w + gap)
+                y = (H - bar_h) // 2
+                draw.rounded_rectangle([x, y, x + bar_w, y + bar_h], radius=bar_w // 2, fill=icon_color)
+
+        # 文字
+        text_x = icon_x + icon_w - dot_r
+        text_y = H // 2 + 1
+        draw.text((text_x, text_y), text, font=font, fill=text_color, anchor="lm")
+
+        self.float_photo = ImageTk.PhotoImage(img)
+        return self.float_photo
 
     def _float_poll(self) -> None:
         """定期刷新悬浮窗文字（只在录音期间有内容变化）"""
@@ -490,7 +534,7 @@ class ModernTranscriberApp(ctk.CTk):
         self.float_window.after(250 if self.recording else 500, self._float_poll)
 
     def _update_float_text(self) -> None:
-        if self.float_canvas is None or self.float_window is None:
+        if self.float_label is None or self.float_window is None:
             return
         if not self.float_window.winfo_exists():
             return
@@ -500,51 +544,45 @@ class ModernTranscriberApp(ctk.CTk):
             text = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
             icon_color = "#ff3b30"
             text_color = "#ff3b30"
+            bg = "#1a1a1e"
+            border = "#3a1020"
         else:
             status = self.float_status
             if "录音失败" in status or "失败" in status or "跳过" in status or "粘贴失败" in status:
                 text = "失败"
                 icon_color = "#ff3b30"
                 text_color = "#ff3b30"
+                bg = "#1a1a1e"
+                border = "#5a1a1a"
             elif "转写" in status or "加载" in status or "DeepSeek" in status or "优化" in status:
                 text = "优化中" if "优化" in status or "DeepSeek" in status else "转写中"
                 icon_color = "#ffcc66"
                 text_color = "#ffcc66"
+                bg = "#0a2040"
+                border = "#4a6fa5"
             elif "完成" in status or "已粘贴" in status or "待命" in status or "|" in status:
                 text = "完成" if "完成" in status or "已粘贴" in status else "待命"
                 icon_color = "#38d27a"
                 text_color = "#38d27a"
+                bg = "#1a1a1e"
+                border = "#1a3a2a"
             else:
                 text = status
                 icon_color = "#d4d8f0"
                 text_color = "#d4d8f0"
+                bg = "#1a1a1e"
+                border = "#3a3f5c"
 
-        pill_bg = "#1a1a1e"
-        pill_border = "#2a2a30"
-
-        # 根据文字宽度动态调整胶囊长度
-        text_w = self._float_font.measure(text)
-        width = max(self._float_min_width, self._float_icon_w + text_w + self._float_padding_x * 2)
-        height = self._float_height
-
-        # 重新调整窗口和 canvas 大小
-        self._float_width = width
-        self.float_canvas.config(width=width, height=height)
-        self.float_window.geometry(f"{width}x{height}+{self.config_data.float_x}+{self.config_data.float_y}")
-
-        # 更新圆角矩形大小
-        points = self._rounded_rect_points(2, 2, width - 2, height - 2, 18)
-        self.float_canvas.coords(self._float_pill_id, *points)
-        self.float_canvas.itemconfig(self._float_pill_id, fill=pill_bg, outline=pill_border)
-
-        # 更新图标颜色
-        self.float_canvas.itemconfig(self._float_dot_id, fill=icon_color)
-        self.float_canvas.itemconfig(self._float_bar1_id, fill=icon_color)
-        self.float_canvas.itemconfig(self._float_bar2_id, fill=icon_color)
-
-        # 更新文字内容与颜色
-        self.float_canvas.itemconfig(self._float_text_id, text=text, fill=text_color)
-        self.float_canvas.coords(self._float_text_id, self._float_icon_w, height // 2)
+        photo = self._render_float_pill(text, icon_color, text_color, bg, border)
+        self.float_label.configure(image=photo)
+        # 窗口尺寸跟随图片
+        try:
+            self.float_label.update_idletasks()
+            W = photo.width()
+            H = photo.height()
+            self.float_window.geometry(f"{W}x{H}+{self.config_data.float_x}+{self.config_data.float_y}")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # 热键系统（支持多快捷键绑定不同提示词）
@@ -808,13 +846,22 @@ class ModernTranscriberApp(ctk.CTk):
 
     def show_recording(self) -> None:
         self.clear_content("recording", "录音与输出")
-        wrap = ctk.CTkScrollableFrame(self.content, fg_color="transparent")
-        wrap.grid(row=0, column=0, sticky="nsew")
+
+        # 外层白色卡片撑满整个内容区，避免下方留空
+        outer = self.card(self.content)
+        outer.grid(row=0, column=0, sticky="nsew")
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_rowconfigure(0, weight=1)
+
+        wrap = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+        wrap.grid(row=0, column=0, sticky="nsew", padx=14, pady=14)
         wrap.grid_columnconfigure(0, weight=1)
 
         self.hotkey_var = ctk.StringVar(value=self.config_data.hotkey)
         self.model_root_var = ctk.StringVar(value=self.config_data.model_root)
         self.output_mode_var = ctk.StringVar(value=self.config_data.output_mode)
+        self.float_size_var = ctk.StringVar(value=self.config_data.float_size)
+        self.float_style_var = ctk.StringVar(value=self.config_data.float_style)
         switches = {
             "hold": ("按住说话，松开结束", self.config_data.hold_to_record),
             "float": ("录音时显示悬浮窗", self.config_data.show_floating_indicator),
@@ -844,10 +891,31 @@ class ModernTranscriberApp(ctk.CTk):
                 row=idx // 2, column=idx % 2, sticky="w", padx=18, pady=12
             )
 
+        float_opts = self.card(wrap)
+        float_opts.grid(row=2, column=0, sticky="ew", pady=(0, 14))
+        float_opts.grid_columnconfigure(1, weight=1)
+        for r, (label, var, values) in enumerate([
+            ("悬浮窗大小", self.float_size_var, ["small", "medium", "large"]),
+            ("悬浮窗样式", self.float_style_var, ["minimal", "wave"]),
+        ]):
+            top = 12 if r == 0 else 6
+            bottom = 6 if r == 0 else 12
+            ctk.CTkLabel(
+                float_opts, text=label, anchor="w", width=80,
+                text_color=self.colors["muted"],
+            ).grid(row=r, column=0, sticky="w", padx=18, pady=(top, bottom))
+            ctk.CTkOptionMenu(
+                float_opts, variable=var, values=values,
+                width=160, height=36, corner_radius=9,
+            ).grid(row=r, column=1, sticky="w", padx=10, pady=(top, bottom))
+
         actions = ctk.CTkFrame(wrap, fg_color="transparent")
-        actions.grid(row=2, column=0, sticky="ew", pady=18)
+        actions.grid(row=3, column=0, sticky="ew", pady=18)
         self.secondary_button(actions, "复制本机模型到项目", self.init_models).pack(side="left")
         self.primary_button(actions, "保存设置", self.save_recording_settings).pack(side="right")
+
+        # 外层卡片已撑满，内部滚动区域按内容自适应即可
+        self.after(50, lambda: wrap._parent_canvas.yview_moveto(0))
 
     def form_entry(self, parent, row: int, label: str, var, browse: bool = False) -> None:
         ctk.CTkLabel(parent, text=label, anchor="w", text_color=self.colors["muted"]).grid(row=row, column=0, sticky="w", padx=18, pady=12)
@@ -865,8 +933,15 @@ class ModernTranscriberApp(ctk.CTk):
 
     def show_hotkeys(self) -> None:
         self.clear_content("hotkeys", "快捷键绑定")
-        wrap = ctk.CTkScrollableFrame(self.content, fg_color="transparent")
-        wrap.grid(row=0, column=0, sticky="nsew")
+
+        # 外层白色卡片撑满整个内容区
+        outer = self.card(self.content)
+        outer.grid(row=0, column=0, sticky="nsew")
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_rowconfigure(0, weight=1)
+
+        wrap = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+        wrap.grid(row=0, column=0, sticky="nsew", padx=14, pady=14)
         wrap.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -1022,7 +1097,22 @@ class ModernTranscriberApp(ctk.CTk):
             self.form_entry(self.editor, 0, "名称", self.provider_name)
             self.form_entry(self.editor, 1, "Base URL", self.provider_base)
             self.form_entry(self.editor, 2, "模型名", self.provider_model)
-            self.form_entry(self.editor, 3, "API Key", self.provider_key)
+
+            # API Key 带眼睛按钮（显示/隐藏切换）
+            ctk.CTkLabel(self.editor, text="API Key", anchor="w", text_color=self.colors["muted"]).grid(row=3, column=0, sticky="w", padx=18, pady=12)
+            key_frame = ctk.CTkFrame(self.editor, fg_color="transparent")
+            key_frame.grid(row=3, column=1, sticky="ew", padx=10, pady=12)
+            key_frame.grid_columnconfigure(0, weight=1)
+            self.provider_key_entry = ctk.CTkEntry(key_frame, textvariable=self.provider_key, height=36, corner_radius=9, show="*")
+            self.provider_key_entry.pack(side="left", fill="x", expand=True)
+            self._key_hidden = True
+            self._key_eye_btn = ctk.CTkButton(
+                key_frame, text="显示", width=60, height=36, corner_radius=9,
+                fg_color="#eef4ff", hover_color="#dfeaff", text_color=self.colors["text"],
+                command=self._toggle_key_visibility,
+            )
+            self._key_eye_btn.pack(side="left", padx=(8, 0))
+
             self.primary_button(self.editor, "设为默认并保存", self.save_provider).grid(row=5, column=1, sticky="e", padx=18, pady=18)
         elif kind == "prompt":
             self.prompt_index = index
@@ -1049,20 +1139,73 @@ class ModernTranscriberApp(ctk.CTk):
 
     def show_about(self) -> None:
         self.clear_content("about", "部署与开源")
-        panel = self.card(self.content)
-        panel.grid(row=0, column=0, sticky="nsew")
-        text = ctk.CTkTextbox(panel, corner_radius=12, fg_color="#f8fafd", wrap="word")
-        text.pack(fill="both", expand=True, padx=18, pady=18)
-        text.insert(
-            "1.0",
-            "普通用户入口：双击 语言转写.vbs，无命令行窗口。\n\n"
-            "开发排错入口：语言转写.bat doctor / transcribe / run。\n\n"
-            "复制到其他电脑：源码 + install.ps1 + 官方模型目录 + 用户自己的 API Key。\n\n"
-            "打包 exe：运行 package.ps1，产物是 dist\\YuyanZhuanxie\\YuyanZhuanxie.exe，已配置为无控制台窗口。\n\n"
-            "开源时请勿提交 .venv、.local_models、config.json、history.jsonl 以及任何 API Key。\n\n"
-            "本项目使用了 FunASR、Paraformer、DeepSeek 等开源技术，详见 README。",
+        self.content.grid_rowconfigure(0, weight=1)
+        self.content.grid_rowconfigure(1, weight=0)
+
+        text = ctk.CTkTextbox(self.content, corner_radius=12, fg_color="#ffffff",
+                              wrap="word", border_width=1, border_color=self.colors["line"])
+        text.grid(row=0, column=0, sticky="nsew", pady=(0, 2))
+
+        content = (
+            "══════  v1.2 更新功能  ══════\n\n"
+            "• 系统托盘：关闭窗口最小化到系统托盘，右键菜单恢复 / 退出\n"
+            "• 悬浮窗：精致 iOS 胶囊条，录音时自动弹出，支持拖拽、大小调节和两种样式\n"
+            "  （圆点+暂停条 / 圆点+动态波形）\n"
+            "• 快捷键绑定：F1~F12 各绑定不同提示词，按不同按键触发不同 AI 润色风格\n"
+            "• API Key 星号隐藏：小眼睛一键切换显示/隐藏，截图更安全\n"
+            "• 粘贴优化：录音时自动定位光标位置，直接 Ctrl+V 粘贴不跳动\n"
+            "• 界面统一：各页面视觉风格一致，布局不再错乱\n\n"
+            "══════  使用说明  ══════\n\n"
+            "一、配置 API Key\n"
+            "进入「AI 供应商」页面，填写 DeepSeek 或其他兼容模型的 Base URL、\n"
+            "模型名和 API Key，点「设为默认并保存」。\n"
+            "API Key 只保存在本机 config.json，已加入 .gitignore。\n\n"
+            "二、选择转写风格\n"
+            "在「提示词管理」页面自定义多条提示词，快捷键绑定页给每条提示词分配\n"
+            "F1~F12，录音完成后自动按所选风格润色。\n\n"
+            "三、开始录音\n"
+            "默认按 F2 开始/停止录音，桌面左上角悬浮窗显示计时。\n"
+            "停止后自动转写 + AI 润色 + 粘贴到光标位置。点击悬浮窗也可切换录音。\n\n"
+            "四、替换词典\n"
+            "在「替换词典」页面配置自动替换规则，如「f二→F2」「回车→Enter」等。\n\n"
+            "五、更多设置\n"
+            "录音与输出页面可切换按住/点按录音、开关悬浮窗、调整悬浮窗大小样式、\n"
+            "模型目录、开机自启等。\n\n"
+            "══════  日常使用  ══════\n\n"
+            "Windows 用户：双击 语言转写.vbs 启动（无命令行窗口）。\n\n"
+            "开发排错：语言转写.bat doctor / transcribe / run。\n\n"
+            "首次使用请先配置 API Key 并下载模型（设置页一键复制本机模型）。\n\n"
+            "══════  打包与分发  ══════\n\n"
+            "打包 exe（推荐）：运行 package.ps1，产物 dist\\YuyanZhuanxie\\YuyanZhuanxie.exe，\n"
+            "无控制台窗口，可直接分发。\n\n"
+            "绿色迁移：复制整个源码目录 + 官方模型目录到其他电脑，\n"
+            "用户自行填写 API Key。\n\n"
+            "开源须知：请勿提交 .venv、.local_models、config.json、history.jsonl\n"
+            "及任何 API Key 到 Git。\n"
+            "技术栈：FunASR / Paraformer 本地语音识别 + DeepSeek / OpenAI\n"
+            "Compatible API 文本润色。\n"
+            "项目地址：https://github.com/nuonuo005/yuyin-zhuanxie\n\n"
+            "══════  联系作者  ══════\n\n"
+            "邮箱：nuon9951@gmail.com\n"
+            "联系人：诺诺\n"
+            "GitHub：https://github.com/nuonuo005\n\n"
+            "如有问题、建议或定制需求，欢迎邮件联系。"
         )
+
+        text.insert("1.0", content)
         text.configure(state="disabled")
+        text.configure(font=ctk.CTkFont(family="Microsoft YaHei UI", size=13))
+
+        # 底部信息栏——填补文本框内容下方的空白区域
+        footer = ctk.CTkFrame(self.content, fg_color="#f8f9fa", corner_radius=0, height=56)
+        footer.grid(row=1, column=0, sticky="ew")
+        footer.grid_propagate(False)
+        ctk.CTkLabel(
+            footer,
+            text="录音助手 v1.2  ·  FunASR + DeepSeek  ·  https://github.com/nuonuo005/yuyin-zhuanxie",
+            font=ctk.CTkFont(family="Microsoft YaHei UI", size=12),
+            text_color="#9ca3af",
+        ).place(relx=0.5, rely=0.5, anchor="center")
 
     # ------------------------------------------------------------------
     # 通用操作
@@ -1076,6 +1219,8 @@ class ModernTranscriberApp(ctk.CTk):
     def save_recording_settings(self) -> None:
         self.config_data.model_root = self.model_root_var.get().strip() or ".local_models/iic"
         self.config_data.output_mode = self.output_mode_var.get()
+        self.config_data.float_size = self.float_size_var.get()
+        self.config_data.float_style = self.float_style_var.get()
         self.config_data.hold_to_record = self.switch_vars["hold"].get()
         self.config_data.show_floating_indicator = self.switch_vars["float"].get()
         self.config_data.start_minimized = self.switch_vars["minimized"].get()
@@ -1131,6 +1276,15 @@ class ModernTranscriberApp(ctk.CTk):
                 self.config_data.replacement_rules.pop(self.rule_index)
             save_config(self.config_data)
             self.show_dictionary()
+
+    def _toggle_key_visibility(self) -> None:
+        self._key_hidden = not self._key_hidden
+        if self._key_hidden:
+            self.provider_key_entry.configure(show="*")
+            self._key_eye_btn.configure(text="显示")
+        else:
+            self.provider_key_entry.configure(show="")
+            self._key_eye_btn.configure(text="隐藏")
 
     def save_provider(self) -> None:
         item = self.config_data.providers[self.provider_index]
