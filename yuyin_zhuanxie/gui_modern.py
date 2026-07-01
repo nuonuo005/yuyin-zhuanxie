@@ -298,6 +298,10 @@ class ModernTranscriberApp(ctk.CTk):
         self.title_label.configure(text=title)
         for child in self.content.winfo_children():
             child.destroy()
+        # 重置主内容区布局，避免从双栏编辑页切换过来后列宽异常
+        self.content.grid_columnconfigure(0, weight=1)
+        self.content.grid_columnconfigure(1, weight=0)
+        self.content.grid_rowconfigure(0, weight=1)
         for nav_key, button in self.nav_buttons.items():
             active = nav_key == key
             button.configure(
@@ -776,7 +780,9 @@ class ModernTranscriberApp(ctk.CTk):
             font=ctk.CTkFont(size=14),
             text_color=self.colors["muted"],
             anchor="w",
-        ).grid(row=0, column=0, sticky="w", padx=6, pady=(0, 18))
+            justify="left",
+            wraplength=820,
+        ).grid(row=0, column=0, sticky="ew", padx=6, pady=(0, 18))
 
         self.hotkey_vars: dict[str, ctk.StringVar] = {}
 
@@ -785,13 +791,28 @@ class ModernTranscriberApp(ctk.CTk):
             card = self.card(wrap)
             card.grid(row=row, column=0, sticky="ew", pady=(0, 10))
             card.grid_columnconfigure(0, weight=1)
+            card.grid_columnconfigure(1, weight=0)
 
             info = ctk.CTkFrame(card, fg_color="transparent")
-            info.grid(row=0, column=0, sticky="w", padx=18, pady=14)
-            ctk.CTkLabel(info, text=prompt["name"], font=ctk.CTkFont(size=15, weight="bold"), text_color=self.colors["text"]).pack(anchor="w")
+            info.grid(row=0, column=0, sticky="nsew", padx=18, pady=14)
+            info.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                info,
+                text=prompt["name"],
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color=self.colors["text"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
             tag = prompt.get("tag", "")
             if tag:
-                ctk.CTkLabel(info, text=f"标签: {tag}", font=ctk.CTkFont(size=12), text_color=self.colors["muted"]).pack(anchor="w")
+                ctk.CTkLabel(
+                    info,
+                    text=f"标签: {tag}",
+                    font=ctk.CTkFont(size=12),
+                    text_color=self.colors["muted"],
+                    anchor="w",
+                ).grid(row=1, column=0, sticky="w")
 
             hk_frame = ctk.CTkFrame(card, fg_color="transparent")
             hk_frame.grid(row=0, column=1, sticky="e", padx=18, pady=14)
