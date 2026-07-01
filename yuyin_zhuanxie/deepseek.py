@@ -9,7 +9,7 @@ class DeepSeekError(RuntimeError):
     pass
 
 
-def polish_text(text: str, config: AppConfig) -> str:
+def polish_text(text: str, config: AppConfig, prompt_id: str | None = None) -> str:
     if not text.strip():
         raise DeepSeekError("没有可处理的文本。")
 
@@ -20,7 +20,17 @@ def polish_text(text: str, config: AppConfig) -> str:
     api_key = provider.get("api_key") or config.deepseek_api_key
     base_url = provider.get("base_url") or config.deepseek_base_url
     model = provider.get("model") or config.deepseek_model
-    prompt = get_active_prompt(config)
+
+    # 优先使用传入的 prompt_id，否则使用全局默认
+    if prompt_id:
+        prompt = None
+        for p in config.prompts:
+            if p.get("id") == prompt_id:
+                prompt = p
+                break
+    else:
+        prompt = get_active_prompt(config)
+
     system_prompt = (prompt or {}).get("prompt") or config.system_prompt
 
     if not api_key and not base_url.startswith("http://127.0.0.1") and not base_url.startswith("http://localhost"):

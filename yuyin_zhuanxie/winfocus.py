@@ -45,17 +45,30 @@ def set_foreground_window(hwnd: int) -> bool:
     return bool(user32.SetForegroundWindow(hwnd))
 
 
+def get_cursor_position() -> tuple[int, int]:
+    point = ctypes.wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(point))
+    return (int(point.x), int(point.y))
+
+
+def set_cursor_position(x: int, y: int) -> None:
+    user32.SetCursorPos(x, y)
+    time.sleep(0.02)
+
+
 def click_current_mouse_position() -> None:
     user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     time.sleep(0.03)
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
-def paste_to_window(hwnd: int, click_mouse_position: bool = True) -> bool:
+def paste_to_window(hwnd: int, click_mouse_position: bool = True, cursor_pos: tuple[int, int] | None = None) -> bool:
     if hwnd:
         set_foreground_window(hwnd)
     time.sleep(0.15)
     if click_mouse_position:
+        if cursor_pos:
+            set_cursor_position(cursor_pos[0], cursor_pos[1])
         click_current_mouse_position()
         time.sleep(0.08)
     try:

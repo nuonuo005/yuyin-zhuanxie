@@ -33,12 +33,14 @@ DEFAULT_PROMPTS = [
         "id": "formal",
         "name": "书面整理",
         "tag": "内置",
+        "hotkey": "",
         "prompt": DEFAULT_SYSTEM_PROMPT,
     },
     {
         "id": "meeting",
         "name": "会议纪要",
         "tag": "内置",
+        "hotkey": "",
         "prompt": (
             "你是会议纪要整理助手。把口语转写整理为清晰的会议纪要，包含背景、结论、待办和风险。"
             "不要新增原文没有的信息。"
@@ -48,6 +50,7 @@ DEFAULT_PROMPTS = [
         "id": "message",
         "name": "消息回复",
         "tag": "内置",
+        "hotkey": "",
         "prompt": (
             "你是中文消息润色助手。把用户的口语表达整理成礼貌、自然、简洁、可直接发送的消息。"
             "保留原意，不改变人称。"
@@ -83,6 +86,8 @@ class AppConfig:
     keep_raw_clipboard: bool = False
     enable_ai_polish: bool = True
     output_mode: str = "polished"
+    float_x: int | None = None
+    float_y: int | None = None
     providers: list[dict] = field(default_factory=list)
     prompts: list[dict] = field(default_factory=list)
     replacement_rules: list[dict] = field(default_factory=list)
