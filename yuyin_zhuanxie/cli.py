@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> None:
 
     sub.add_parser("gui", help="打开可视化客户端")
     sub.add_parser("doctor", help="检查环境、模型路径和依赖")
-    sub.add_parser("init-models", help="复制本机已缓存的 ModelScope/FunASR 模型到项目 .local_models")
+    sub.add_parser("init-models", help="准备本地模型：优先复制缓存，缺失时从 ModelScope 下载")
     sub.add_parser("polish-clipboard", help="读取剪贴板文本，AI 书面化后写回剪贴板")
 
     p_transcribe = sub.add_parser("transcribe", help="使用本地模型转写音频文件")
@@ -46,14 +46,20 @@ def main(argv: list[str] | None = None) -> None:
             normalized = normalize_text(raw, config)
             polished = polish_text(normalized, config)
             output = choose_output(raw, normalized, polished, config)
-            write_clipboard(output)
+            if not write_clipboard(output):
+                raise RuntimeError("无法写入剪贴板，请稍后重试。")
             if config.save_history:
-                append_history(raw, output, "clipboard")
+                append_history(
+                    raw,
+                    output,
+                    "clipboard",
+                    max_entries=config.history_max_entries,
+                )
             print(output)
             print("\n已写入剪贴板。")
         elif args.command == "transcribe":
             audio = Path(args.audio).expanduser().resolve()
-            text = transcribe_audio(audio, config)
+            text = transcribe_audio(audio, config, use_local_punctuation=True)
             print(text)
         elif args.command == "run":
             audio = Path(args.audio).expanduser().resolve()
@@ -62,9 +68,15 @@ def main(argv: list[str] | None = None) -> None:
             polished = polish_text(normalized, config)
             output = choose_output(raw, normalized, polished, config)
             if config.copy_result_to_clipboard:
-                write_clipboard(output)
+                if not write_clipboard(output):
+                    raise RuntimeError("无法写入剪贴板，请稍后重试。")
             if config.save_history:
-                append_history(raw, output, str(audio))
+                append_history(
+                    raw,
+                    output,
+                    str(audio),
+                    max_entries=config.history_max_entries,
+                )
             print(output)
             if config.copy_result_to_clipboard:
                 print("\n已写入剪贴板。")
@@ -81,7 +93,18 @@ def cmd_doctor(config) -> None:
         mark = "OK" if path.exists() else "MISSING"
         print(f"{mark} {label}: {path}")
 
-    for package in ["funasr_onnx", "modelscope", "onnxruntime", "numpy", "requests", "sounddevice", "keyboard", "customtkinter"]:
+    for package in [
+        "funasr_onnx",
+        "modelscope",
+        "onnxruntime",
+        "numpy",
+        "requests",
+        "sounddevice",
+        "keyboard",
+        "customtkinter",
+        "pystray",
+        "PIL",
+    ]:
         mark = "OK" if importlib.util.find_spec(package) else "MISSING"
         print(f"{mark} Python package: {package}")
 

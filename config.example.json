@@ -1,7 +1,7 @@
 {
   "deepseek_api_key": "",
   "deepseek_base_url": "https://api.deepseek.com/v1",
-  "deepseek_model": "deepseek-chat",
+  "deepseek_model": "deepseek-v4-flash",
   "model_root": ".local_models/iic",
   "copy_result_to_clipboard": true,
   "save_history": true,
@@ -18,13 +18,18 @@
   "strip_trailing_punctuation": false,
   "keep_raw_clipboard": false,
   "enable_ai_polish": true,
+  "skip_local_punctuation_when_ai_polish": true,
+  "ai_timeout_seconds": 60,
+  "ai_max_tokens": 4000,
+  "max_recording_seconds": 600,
+  "history_max_entries": 5000,
   "output_mode": "polished",
   "providers": [
     {
       "id": "deepseek",
       "name": "DeepSeek",
       "base_url": "https://api.deepseek.com/v1",
-      "model": "deepseek-chat",
+      "model": "deepseek-v4-flash",
       "api_key": ""
     }
   ],

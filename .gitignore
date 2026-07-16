@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .local_models/
 config.json
+config.json.bak
+config.json.tmp
 history.jsonl
 *.wav
 *.mp3
@@ -10,4 +12,6 @@ history.jsonl
 *.flac
 dist/
 build/
+.build-venv/
+*.spec
 *.egg-info/

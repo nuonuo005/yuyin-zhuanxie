@@ -7,6 +7,7 @@ from .config import AppConfig
 
 CN_NUM = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 CN_UNIT = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+NON_NUMERIC_NUMBER_WORDS = {"万一", "千万"}
 
 FILLER_PATTERNS = [
     r"嗯+",
@@ -54,7 +55,7 @@ def choose_output(raw_text: str, normalized_text: str, polished_text: str, confi
 def convert_chinese_numbers(text: str) -> str:
     def repl(match: re.Match[str]) -> str:
         token = match.group(0)
-        if len(token) == 1 and token not in CN_UNIT:
+        if len(token) == 1 or token in NON_NUMERIC_NUMBER_WORDS:
             return token
         value = chinese_number_to_int(token)
         return str(value) if value is not None else token

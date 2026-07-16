@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
+import os
 import shutil
+import sys
 import threading
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +22,7 @@ PUNC_MODEL = "punc_ct-transformer_zh-cn-common-vocab272727-onnx"
 
 _ENGINE_LOCK = threading.Lock()
 _ENGINE_CACHE: dict[str, Any] = {}
+_FUNASR_CLASSES: tuple[Any, Any, Any] | None = None
 
 
 @dataclass
@@ -38,10 +44,13 @@ def resolve_model_paths(config: AppConfig) -> ModelPaths:
     return ModelPaths(root=root, asr=root / ASR_MODEL, vad=root / VAD_MODEL, punc=root / PUNC_MODEL)
 
 
-def check_models(config: AppConfig) -> list[str]:
+def check_models(config: AppConfig, require_punc: bool = True) -> list[str]:
     paths = resolve_model_paths(config)
     missing = []
-    for label, path in [("ASR", paths.asr), ("VAD", paths.vad), ("PUNC", paths.punc)]:
+    required = [("ASR", paths.asr), ("VAD", paths.vad)]
+    if require_punc:
+        required.append(("PUNC", paths.punc))
+    for label, path in required:
         if not path.exists():
             missing.append(f"{label}: {path}")
     return missing
@@ -49,58 +58,132 @@ def check_models(config: AppConfig) -> list[str]:
 
 def copy_cached_models(dest_root: Path | None = None) -> Path:
     src = DEFAULT_VOCOTYPE_MODEL_ROOT
-    if not src.exists():
-        raise FileNotFoundError(f"没有找到本机 ModelScope 缓存目录：{src}")
-
     if dest_root is None:
         dest_root = project_root() / ".local_models" / "iic"
     dest_root.mkdir(parents=True, exist_ok=True)
 
     for name in [ASR_MODEL, VAD_MODEL, PUNC_MODEL]:
-        src_dir = src / name
         dest_dir = dest_root / name
-        if not src_dir.exists():
-            raise FileNotFoundError(f"模型目录不存在：{src_dir}")
         if dest_dir.exists():
             continue
-        shutil.copytree(src_dir, dest_dir)
+        src_dir = src / name
+        if src_dir.exists():
+            shutil.copytree(src_dir, dest_dir)
+            continue
+
+        try:
+            from modelscope import snapshot_download
+        except ImportError as exc:
+            raise RuntimeError(
+                "本机没有模型缓存，也缺少 modelscope 下载工具。请重新运行 install.ps1。"
+            ) from exc
+
+        temp_dir = dest_root / f".{name}.download"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        try:
+            snapshot_download(
+                model_id=f"iic/{name}",
+                local_dir=str(temp_dir),
+            )
+            if not temp_dir.exists():
+                raise RuntimeError("下载完成后没有找到模型目录。")
+            os.replace(temp_dir, dest_dir)
+        except Exception as exc:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            raise RuntimeError(
+                f"模型 {name} 下载失败，请检查网络后重试：{exc}"
+            ) from exc
     return dest_root
 
 
-def get_engines(config: AppConfig) -> tuple[Any, Any, Any]:
-    missing = check_models(config)
+def should_use_local_punctuation(config: AppConfig) -> bool:
+    if not getattr(config, "skip_local_punctuation_when_ai_polish", True):
+        return True
+    if not config.enable_ai_polish:
+        return True
+    return config.output_mode in {"raw", "normalized"}
+
+
+def _load_funasr_classes() -> tuple[Any, Any, Any]:
+    """只加载项目使用的 ONNX 类，避开 funasr-onnx 对 torch 的非必要导入。"""
+    global _FUNASR_CLASSES
+    if _FUNASR_CLASSES is not None:
+        return _FUNASR_CLASSES
+
+    spec = importlib.util.find_spec("funasr_onnx")
+    if spec is None or not spec.submodule_search_locations:
+        raise ImportError("找不到 funasr-onnx")
+
+    existing = sys.modules.get("funasr_onnx")
+    if existing is None or not hasattr(existing, "__path__"):
+        package = types.ModuleType("funasr_onnx")
+        package.__file__ = spec.origin
+        package.__package__ = "funasr_onnx"
+        package.__path__ = list(spec.submodule_search_locations)
+        package.__spec__ = spec
+        sys.modules["funasr_onnx"] = package
+
+    paraformer_module = importlib.import_module("funasr_onnx.paraformer_bin")
+    vad_module = importlib.import_module("funasr_onnx.vad_bin")
+    punc_module = importlib.import_module("funasr_onnx.punc_bin")
+    _FUNASR_CLASSES = (
+        vad_module.Fsmn_vad,
+        paraformer_module.Paraformer,
+        punc_module.CT_Transformer,
+    )
+    return _FUNASR_CLASSES
+
+
+def get_engines(config: AppConfig, load_punc: bool = True) -> tuple[Any, Any, Any | None]:
+    missing = check_models(config, require_punc=load_punc)
     if missing:
-        raise FileNotFoundError("模型目录不完整：\n" + "\n".join(missing))
+        raise FileNotFoundError("Model folders are incomplete:\n" + "\n".join(missing))
 
     paths = resolve_model_paths(config)
     cache_key = str(paths.root.resolve())
     with _ENGINE_LOCK:
-        if _ENGINE_CACHE.get("key") == cache_key:
-            return _ENGINE_CACHE["vad"], _ENGINE_CACHE["asr"], _ENGINE_CACHE["punc"]
+        if _ENGINE_CACHE.get("key") != cache_key:
+            _ENGINE_CACHE.clear()
+            _ENGINE_CACHE["key"] = cache_key
 
-        try:
-            from funasr_onnx import CT_Transformer, Fsmn_vad, Paraformer
-        except ImportError as exc:
-            raise RuntimeError("缺少 funasr-onnx。请运行 install.ps1 重新安装依赖。") from exc
+        vad = _ENGINE_CACHE.get("vad")
+        asr = _ENGINE_CACHE.get("asr")
+        if vad is None or asr is None:
+            try:
+                Fsmn_vad, Paraformer, _CT_Transformer = _load_funasr_classes()
+            except ImportError as exc:
+                raise RuntimeError("缺少 funasr-onnx，请重新运行 install.ps1。") from exc
 
-        vad = Fsmn_vad(model_dir=str(paths.vad), quantize=True)
-        asr = Paraformer(model_dir=str(paths.asr), quantize=True)
-        punc = CT_Transformer(model_dir=str(paths.punc), quantize=True)
-        _ENGINE_CACHE.clear()
-        _ENGINE_CACHE.update({"key": cache_key, "vad": vad, "asr": asr, "punc": punc})
-        return vad, asr, punc
+            vad = Fsmn_vad(model_dir=str(paths.vad), quantize=True)
+            asr = Paraformer(model_dir=str(paths.asr), quantize=True)
+            _ENGINE_CACHE.update({"vad": vad, "asr": asr})
+
+        if load_punc and _ENGINE_CACHE.get("punc") is None:
+            try:
+                _Fsmn_vad, _Paraformer, CT_Transformer = _load_funasr_classes()
+            except ImportError as exc:
+                raise RuntimeError("缺少 funasr-onnx，请重新运行 install.ps1。") from exc
+
+            _ENGINE_CACHE["punc"] = CT_Transformer(model_dir=str(paths.punc), quantize=True)
+
+        return vad, asr, _ENGINE_CACHE.get("punc")
 
 
 def warmup_models(config: AppConfig) -> None:
-    get_engines(config)
+    get_engines(config, load_punc=should_use_local_punctuation(config))
 
 
-def transcribe_audio(audio_path: Path, config: AppConfig) -> str:
-    _vad, asr, punc = get_engines(config)
+def transcribe_audio(audio_path: Path, config: AppConfig, use_local_punctuation: bool | None = None) -> str:
+    use_punc = should_use_local_punctuation(config) if use_local_punctuation is None else use_local_punctuation
+    _vad, asr, punc = get_engines(config, load_punc=use_punc)
     raw_result: Any = asr(str(audio_path))
     raw_text = extract_text(raw_result)
     if not raw_text:
         return ""
+    if not use_punc or punc is None:
+        return raw_text.strip()
     punc_result = punc(raw_text)
     if isinstance(punc_result, tuple):
         return str(punc_result[0]).strip()

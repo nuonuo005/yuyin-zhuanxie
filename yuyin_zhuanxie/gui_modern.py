@@ -13,10 +13,11 @@ import customtkinter as ctk
 from . import autostart
 from .asr import copy_cached_models, resolve_model_paths, transcribe_audio, warmup_models
 from .clipboard import read_clipboard, write_clipboard
-from .config import get_active_prompt, get_active_provider, load_config, save_config
-from .deepseek import polish_text
+from .config import get_active_prompt, get_active_provider, get_config_warning, load_config, save_config
+from .deepseek import DeepSeekError, polish_text, validate_provider
 from .history import append_history
 from .recorder import AudioRecorder
+from .single_instance import acquire_single_instance, release_single_instance
 from .text_tools import choose_output, normalize_text
 from .winfocus import get_foreground_window, is_own_window, paste_to_window
 
@@ -90,6 +91,7 @@ class ModernTranscriberApp(ctk.CTk):
         self.config_data = load_config()
         self.recorder = AudioRecorder()
         self.recording = False
+        self.processing = False
         self.started_at = 0.0
         self.hotkey_error = ""
         self.current_page = ""
@@ -104,6 +106,8 @@ class ModernTranscriberApp(ctk.CTk):
         self.prompt_index = 0
         self.rule_index = 0
         self.triggered_prompt_id: str | None = None
+        self.recording_prompt_id: str | None = None
+        self._recording_timeout_id: str | None = None
         self._tray_icon = None
         self._quitting = False
 
@@ -125,6 +129,9 @@ class ModernTranscriberApp(ctk.CTk):
         self.track_external_focus()
         self.preload_models_background()
         self.after(500, self._start_tray)
+        warning = get_config_warning()
+        if warning:
+            self.after(700, lambda: messagebox.showwarning("配置恢复提示", warning))
 
         if self.config_data.start_minimized:
             self.after(100, self.iconify)
@@ -159,13 +166,12 @@ class ModernTranscriberApp(ctk.CTk):
 
     def quit_app(self) -> None:
         self._quitting = True
-        self.on_close()
         if self._tray_icon:
             try:
                 self._tray_icon.stop()
             except Exception:
                 pass
-        self.destroy()
+        self.on_close()
 
     # ------------------------------------------------------------------
     # 构建界面
@@ -594,6 +600,8 @@ class ModernTranscriberApp(ctk.CTk):
         for prompt in self.config_data.prompts:
             hk = (prompt.get("hotkey") or "").strip().lower()
             if hk:
+                if hk in mapping:
+                    raise ValueError(f"快捷键 {hk.upper()} 被多个提示词重复使用")
                 mapping[hk] = prompt["id"]
         return mapping
 
@@ -609,44 +617,48 @@ class ModernTranscriberApp(ctk.CTk):
             keyboard.unhook_all()
             hk_map = self._build_hotkey_map()
 
-            if hk_map:
-                # 多快捷键模式：每个热键绑定不同提示词
-                for hotkey, prompt_id in hk_map.items():
-                    pid = prompt_id
-                    if self.config_data.hold_to_record:
-                        keyboard.on_press_key(
-                            hotkey,
-                            lambda event, p=pid: self.after(0, lambda: self._start_with_prompt(p)),
-                            suppress=False,
-                        )
-                        keyboard.on_release_key(
-                            hotkey,
-                            lambda event: self.after(0, self.stop_recording),
-                            suppress=False,
-                        )
-                    else:
-                        keyboard.add_hotkey(
-                            hotkey,
-                            lambda p=pid: self.after(0, lambda: self._toggle_with_prompt(p)),
-                        )
-            else:
-                # 后兼容：无绑定快捷键时，使用旧版全局热键
-                key = (self.config_data.hotkey or "F2").lower()
+            # 先注册每个提示词专属的快捷键
+            for hotkey, prompt_id in hk_map.items():
+                pid = prompt_id
                 if self.config_data.hold_to_record:
-                    keyboard.on_press_key(key, lambda event: self.after(0, self.start_recording), suppress=False)
-                    keyboard.on_release_key(key, lambda event: self.after(0, self.stop_recording), suppress=False)
+                    keyboard.on_press_key(
+                        hotkey,
+                        lambda event, p=pid: self.after(0, lambda: self._start_with_prompt(p)),
+                        suppress=False,
+                    )
+                    keyboard.on_release_key(
+                        hotkey,
+                        lambda event: self.after(0, self.stop_recording),
+                        suppress=False,
+                    )
                 else:
-                    keyboard.add_hotkey(key, lambda: self.after(0, self.toggle_recording))
+                    keyboard.add_hotkey(
+                        hotkey,
+                        lambda p=pid: self.after(0, lambda: self._toggle_with_prompt(p)),
+                    )
+
+            # 兜底：全局热键如果不在已注册的提示词快捷键中，单独注册
+            global_key = (self.config_data.hotkey or "F2").lower()
+            if global_key not in hk_map:
+                if self.config_data.hold_to_record:
+                    keyboard.on_press_key(global_key, lambda event: self.after(0, self.start_recording), suppress=False)
+                    keyboard.on_release_key(global_key, lambda event: self.after(0, self.stop_recording), suppress=False)
+                else:
+                    keyboard.add_hotkey(global_key, lambda: self.after(0, self.toggle_recording))
         except Exception as exc:
             self.hotkey_error = str(exc)
 
     def _start_with_prompt(self, prompt_id: str) -> None:
+        if self.recording or self.processing:
+            return
         self.triggered_prompt_id = prompt_id
         self.start_recording()
 
     def _toggle_with_prompt(self, prompt_id: str) -> None:
         if self.recording:
             self.stop_recording()
+        elif self.processing:
+            self.set_runtime_state("上一条内容仍在处理中")
         else:
             self.triggered_prompt_id = prompt_id
             self.start_recording()
@@ -661,25 +673,55 @@ class ModernTranscriberApp(ctk.CTk):
     def start_recording(self) -> None:
         if self.recording:
             return
+        if self.processing:
+            self.set_runtime_state("上一条内容仍在处理中")
+            return
         try:
             self.target_hwnd = self.choose_target_window()
             self.recorder.start()
             self.recording = True
+            self.recording_prompt_id = self.triggered_prompt_id
+            self.triggered_prompt_id = None
             self.started_at = time.time()
             self.set_runtime_state("录音中 00:00")
+            max_seconds = max(30, int(self.config_data.max_recording_seconds))
+            self._recording_timeout_id = self.after(
+                max_seconds * 1000,
+                self._stop_recording_due_to_limit,
+            )
         except Exception as exc:
             messagebox.showerror("录音失败", str(exc))
+
+    def _stop_recording_due_to_limit(self) -> None:
+        self._recording_timeout_id = None
+        if self.recording:
+            self.set_runtime_state("已达到最长录音时间，正在转写")
+            self.stop_recording()
 
     def stop_recording(self) -> None:
         if not self.recording:
             return
+        if self._recording_timeout_id:
+            try:
+                self.after_cancel(self._recording_timeout_id)
+            except Exception:
+                pass
+            self._recording_timeout_id = None
         try:
             wav = self.recorder.stop()
             self.recording = False
             self.set_runtime_state("转写中")
-            self.process_audio(wav)
+            prompt_id = self.recording_prompt_id
+            self.recording_prompt_id = None
+            self.process_audio(
+                wav,
+                cleanup_after=True,
+                source="microphone",
+                prompt_id=prompt_id,
+            )
         except Exception as exc:
             self.recording = False
+            self.recording_prompt_id = None
             self.set_runtime_state(f"录音失败：{exc}")
             messagebox.showerror("停止录音失败", str(exc))
 
@@ -707,7 +749,7 @@ class ModernTranscriberApp(ctk.CTk):
     def choose_audio(self) -> None:
         audio = filedialog.askopenfilename(title="选择音频文件", filetypes=[("Audio", "*.wav *.mp3 *.m4a *.aac *.flac"), ("All files", "*.*")])
         if audio:
-            self.process_audio(Path(audio))
+            self.process_audio(Path(audio), cleanup_after=False, source=audio)
 
     def polish_clipboard(self) -> None:
         try:
@@ -715,47 +757,102 @@ class ModernTranscriberApp(ctk.CTk):
         except Exception as exc:
             messagebox.showerror("读取剪贴板失败", str(exc))
 
-    def process_audio(self, audio_path: Path) -> None:
+    def _begin_processing(self) -> bool:
+        if self.processing:
+            self.set_runtime_state("上一条内容仍在处理中")
+            return False
+        self.processing = True
+        return True
+
+    def _finish_processing(self) -> None:
+        self.processing = False
+
+    def process_audio(
+        self,
+        audio_path: Path,
+        cleanup_after: bool = False,
+        source: str | None = None,
+        prompt_id: str | None = None,
+    ) -> None:
+        if not self._begin_processing():
+            if cleanup_after:
+                audio_path.unlink(missing_ok=True)
+            return
+
         def worker() -> None:
             try:
                 self.set_runtime_state("本地转写中")
                 raw = transcribe_audio(audio_path, self.config_data)
-                self.process_text(raw, str(audio_path), same_thread=True)
+                self._process_text_worker(raw, source or str(audio_path), prompt_id)
             except Exception as exc:
                 self.set_runtime_state(f"转写失败：{exc}")
+            finally:
+                if cleanup_after:
+                    audio_path.unlink(missing_ok=True)
+                self._finish_processing()
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def process_text(self, raw: str, source: str, same_thread: bool = False) -> None:
-        prompt_id = self.triggered_prompt_id
-        self.triggered_prompt_id = None
+    def process_text(self, raw: str, source: str) -> None:
+        if not self._begin_processing():
+            return
 
         def worker() -> None:
-            normalized = normalize_text(raw, self.config_data)
-            polished = normalized
-            if self.config_data.enable_ai_polish:
-                try:
-                    self.set_runtime_state("DeepSeek 优化中")
-                    polished = polish_text(normalized, self.config_data, prompt_id=prompt_id)
-                except Exception as exc:
-                    polished = normalized
-                    self.set_runtime_state(f"AI 跳过：{exc}")
-            else:
-                polished = normalized
-                self.set_runtime_state("已跳过 DeepSeek")
-            output = choose_output(raw, normalized, polished, self.config_data)
-            if self.config_data.copy_result_to_clipboard:
-                clip = raw if self.config_data.keep_raw_clipboard else output
-                self.after(0, lambda: write_clipboard(clip))
-            if self.config_data.save_history:
-                append_history(raw, output, source)
-            if self.config_data.auto_paste:
-                self.after(250, self.send_paste)
-            self.after(0, lambda: self.fill_outputs(raw, normalized, output))
-            self.set_runtime_state("已完成")
-            self.after(2000, self._sync_float_visibility)
+            try:
+                self._process_text_worker(raw, source, None)
+            except Exception as exc:
+                self.set_runtime_state(f"处理失败：{exc}")
+            finally:
+                self._finish_processing()
 
-        worker() if same_thread else threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _process_text_worker(
+        self,
+        raw: str,
+        source: str,
+        prompt_id: str | None,
+    ) -> None:
+        if not raw.strip():
+            raise RuntimeError("没有识别到可处理的文字。")
+
+        completion_status = "已完成"
+        normalized = normalize_text(raw, self.config_data)
+        polished = normalized
+        if self.config_data.enable_ai_polish:
+            try:
+                self.set_runtime_state("第三方大语言模型优化中")
+                polished = polish_text(normalized, self.config_data, prompt_id=prompt_id)
+            except Exception as exc:
+                polished = normalized
+                completion_status = f"已完成（AI 未使用：{exc}）"
+        else:
+            self.set_runtime_state("已跳过第三方大语言模型")
+
+        output = choose_output(raw, normalized, polished, self.config_data)
+        needs_clipboard = (
+            self.config_data.copy_result_to_clipboard
+            or self.config_data.auto_paste
+        )
+        clipboard_ok = True
+        if needs_clipboard:
+            clip = raw if self.config_data.keep_raw_clipboard else output
+            clipboard_ok = write_clipboard(clip)
+            if not clipboard_ok:
+                completion_status = "处理完成，但写入剪贴板失败"
+
+        if self.config_data.save_history:
+            append_history(
+                raw,
+                output,
+                source,
+                max_entries=self.config_data.history_max_entries,
+            )
+        if self.config_data.auto_paste and clipboard_ok:
+            self.after(80, self.send_paste)
+        self.after(0, lambda: self.fill_outputs(raw, normalized, output))
+        self.set_runtime_state(completion_status)
+        self.after(2000, self._sync_float_visibility)
 
     def fill_outputs(self, raw: str, normalized: str, final: str) -> None:
         if self.current_page != "home":
@@ -859,6 +956,7 @@ class ModernTranscriberApp(ctk.CTk):
 
         self.hotkey_var = ctk.StringVar(value=self.config_data.hotkey)
         self.model_root_var = ctk.StringVar(value=self.config_data.model_root)
+        self.max_recording_var = ctk.StringVar(value=str(self.config_data.max_recording_seconds))
         self.output_mode_var = ctk.StringVar(value=self.config_data.output_mode)
         self.float_size_var = ctk.StringVar(value=self.config_data.float_size)
         self.float_style_var = ctk.StringVar(value=self.config_data.float_style)
@@ -869,7 +967,7 @@ class ModernTranscriberApp(ctk.CTk):
             "minimized": ("启动后最小化", self.config_data.start_minimized),
             "copy": ("复制结果到剪贴板", self.config_data.copy_result_to_clipboard),
             "paste": ("处理完成后自动粘贴", self.config_data.auto_paste),
-            "ai": ("启用 DeepSeek 书面化", self.config_data.enable_ai_polish),
+            "ai": ("启用第三方大语言模型书面化", self.config_data.enable_ai_polish),
             "history": ("保存历史记录", self.config_data.save_history),
             "numbers": ("智能数字转换", self.config_data.smart_numbers),
             "filler": ("过滤口语词", self.config_data.filter_filler_words),
@@ -882,6 +980,7 @@ class ModernTranscriberApp(ctk.CTk):
         panel.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         panel.grid_columnconfigure(1, weight=1)
         self.form_entry(panel, 0, "模型目录", self.model_root_var, browse=True)
+        self.form_entry(panel, 1, "最长录音（秒）", self.max_recording_var)
 
         toggles = self.card(wrap)
         toggles.grid(row=1, column=0, sticky="ew")
@@ -911,7 +1010,7 @@ class ModernTranscriberApp(ctk.CTk):
 
         actions = ctk.CTkFrame(wrap, fg_color="transparent")
         actions.grid(row=3, column=0, sticky="ew", pady=18)
-        self.secondary_button(actions, "复制本机模型到项目", self.init_models).pack(side="left")
+        self.secondary_button(actions, "准备或下载本地模型", self.init_models).pack(side="left")
         self.primary_button(actions, "保存设置", self.save_recording_settings).pack(side="right")
 
         # 外层卡片已撑满，内部滚动区域按内容自适应即可
@@ -1001,6 +1100,22 @@ class ModernTranscriberApp(ctk.CTk):
         self.primary_button(actions, "保存快捷键设置", self.save_hotkeys).pack(side="right")
 
     def save_hotkeys(self) -> None:
+        selected: dict[str, str] = {}
+        for prompt in self.config_data.prompts:
+            var = self.hotkey_vars.get(prompt["id"])
+            if var is None:
+                continue
+            val = var.get().strip().lower()
+            if not val or val == "无":
+                continue
+            if val in selected:
+                messagebox.showwarning(
+                    "快捷键重复",
+                    f"{val.upper()} 已分配给多个提示词，请为每个提示词选择不同快捷键。",
+                )
+                return
+            selected[val] = prompt["id"]
+
         changed = False
         for prompt in self.config_data.prompts:
             var = self.hotkey_vars.get(prompt["id"])
@@ -1147,19 +1262,25 @@ class ModernTranscriberApp(ctk.CTk):
         text.grid(row=0, column=0, sticky="nsew", pady=(0, 2))
 
         content = (
-            "══════  v1.2 更新功能  ══════\n\n"
-            "• 系统托盘：关闭窗口最小化到系统托盘，右键菜单恢复 / 退出\n"
-            "• 悬浮窗：精致 iOS 胶囊条，录音时自动弹出，支持拖拽、大小调节和两种样式\n"
-            "  （圆点+暂停条 / 圆点+动态波形）\n"
-            "• 快捷键绑定：F1~F12 各绑定不同提示词，按不同按键触发不同 AI 润色风格\n"
-            "• API Key 星号隐藏：小眼睛一键切换显示/隐藏，截图更安全\n"
-            "• 粘贴优化：录音时自动定位光标位置，直接 Ctrl+V 粘贴不跳动\n"
-            "• 界面统一：各页面视觉风格一致，布局不再错乱\n\n"
+            "══════  v1.3.0 稳定性与安全更新  ══════\n\n"
+            "• 录音内存优化：录音内容边录边写临时文件，不再一直堆积在内存中\n"
+            "• 临时文件治理：转写完成后自动清理，并增加最长录音时间保护\n"
+            "• 防重复执行：转写期间不再重复启动任务，同时只允许运行一个软件实例\n"
+            "• AI 接口更新：默认使用 deepseek-v4-flash，补充超时、限流和失败降级提示\n"
+            "• 密钥保护：API Key 使用 Windows 加密保存，配置损坏时可读取备份\n"
+            "• 剪贴板修复：改用 Windows 原生接口，写入失败时不会继续错误粘贴\n"
+            "• 历史记录限制：默认最多保留 5000 条，避免文件无限增长\n"
+            "• 轻量运行：移除未使用的 PyTorch、Transformers 等大型运行依赖\n"
+            "• 安装与打包：脚本会检查真实退出码，失败时不再错误提示“完成”\n\n"
+            "══════  v1.2 原有功能  ══════\n\n"
+            "• 系统托盘、iOS 胶囊悬浮窗、拖拽和大小样式设置\n"
+            "• F1~F12 绑定不同提示词，按不同快捷键使用不同 AI 润色风格\n"
+            "• API Key 星号隐藏、光标位置自动粘贴、统一设置界面\n\n"
             "══════  使用说明  ══════\n\n"
             "一、配置 API Key\n"
             "进入「AI 供应商」页面，填写 DeepSeek 或其他兼容模型的 Base URL、\n"
             "模型名和 API Key，点「设为默认并保存」。\n"
-            "API Key 只保存在本机 config.json，已加入 .gitignore。\n\n"
+            "API Key 使用 Windows 自带加密后保存在本机 config.json，且已加入 .gitignore。\n\n"
             "二、选择转写风格\n"
             "在「提示词管理」页面自定义多条提示词，快捷键绑定页给每条提示词分配\n"
             "F1~F12，录音完成后自动按所选风格润色。\n\n"
@@ -1170,16 +1291,17 @@ class ModernTranscriberApp(ctk.CTk):
             "在「替换词典」页面配置自动替换规则，如「f二→F2」「回车→Enter」等。\n\n"
             "五、更多设置\n"
             "录音与输出页面可切换按住/点按录音、开关悬浮窗、调整悬浮窗大小样式、\n"
-            "模型目录、开机自启等。\n\n"
+            "最长录音时间、模型目录、开机自启等。\n\n"
             "══════  日常使用  ══════\n\n"
             "Windows 用户：双击 语言转写.vbs 启动（无命令行窗口）。\n\n"
             "开发排错：语言转写.bat doctor / transcribe / run。\n\n"
-            "首次使用请先配置 API Key 并下载模型（设置页一键复制本机模型）。\n\n"
+            "首次使用请先配置 API Key，并在设置页点击「准备或下载本地模型」。\n\n"
             "══════  打包与分发  ══════\n\n"
-            "打包 exe（推荐）：运行 package.ps1，产物 dist\\YuyanZhuanxie\\YuyanZhuanxie.exe，\n"
-            "无控制台窗口，可直接分发。\n\n"
-            "绿色迁移：复制整个源码目录 + 官方模型目录到其他电脑，\n"
-            "用户自行填写 API Key。\n\n"
+            "运行 package.ps1 后会生成 dist\\YuyanZhuanxie 文件夹。\n"
+            "分发时必须复制整个 YuyanZhuanxie 文件夹，不能只复制其中一个 exe。\n"
+            "本地模型和个人 config.json 不会打进安装包；首次运行需准备模型，\n"
+            "并由每位用户自行填写 API Key。\n\n"
+            "源码部署：克隆 GitHub 仓库后运行 install.ps1，再双击 语言转写.vbs。\n\n"
             "开源须知：请勿提交 .venv、.local_models、config.json、history.jsonl\n"
             "及任何 API Key 到 Git。\n"
             "技术栈：FunASR / Paraformer 本地语音识别 + DeepSeek / OpenAI\n"
@@ -1202,7 +1324,7 @@ class ModernTranscriberApp(ctk.CTk):
         footer.grid_propagate(False)
         ctk.CTkLabel(
             footer,
-            text="录音助手 v1.2  ·  FunASR + DeepSeek  ·  https://github.com/nuonuo005/yuyin-zhuanxie",
+            text="录音助手 v1.3.0  ·  FunASR + DeepSeek  ·  https://github.com/nuonuo005/yuyin-zhuanxie",
             font=ctk.CTkFont(family="Microsoft YaHei UI", size=12),
             text_color="#9ca3af",
         ).place(relx=0.5, rely=0.5, anchor="center")
@@ -1217,7 +1339,17 @@ class ModernTranscriberApp(ctk.CTk):
             var.set(selected)
 
     def save_recording_settings(self) -> None:
+        try:
+            max_seconds = int(self.max_recording_var.get().strip())
+        except ValueError:
+            messagebox.showwarning("设置无效", "最长录音时间必须填写整数秒。")
+            return
+        if not 30 <= max_seconds <= 7200:
+            messagebox.showwarning("设置无效", "最长录音时间需在 30 到 7200 秒之间。")
+            return
+
         self.config_data.model_root = self.model_root_var.get().strip() or ".local_models/iic"
+        self.config_data.max_recording_seconds = max_seconds
         self.config_data.output_mode = self.output_mode_var.get()
         self.config_data.float_size = self.float_size_var.get()
         self.config_data.float_style = self.float_style_var.get()
@@ -1226,7 +1358,10 @@ class ModernTranscriberApp(ctk.CTk):
         self.config_data.start_minimized = self.switch_vars["minimized"].get()
         self.config_data.copy_result_to_clipboard = self.switch_vars["copy"].get()
         self.config_data.auto_paste = self.switch_vars["paste"].get()
+        if self.config_data.auto_paste:
+            self.config_data.copy_result_to_clipboard = True
         self.config_data.enable_ai_polish = self.switch_vars["ai"].get()
+        self.config_data.skip_local_punctuation_when_ai_polish = self.config_data.enable_ai_polish
         self.config_data.save_history = self.switch_vars["history"].get()
         self.config_data.smart_numbers = self.switch_vars["numbers"].get()
         self.config_data.filter_filler_words = self.switch_vars["filler"].get()
@@ -1287,12 +1422,20 @@ class ModernTranscriberApp(ctk.CTk):
             self._key_eye_btn.configure(text="隐藏")
 
     def save_provider(self) -> None:
+        base_url = self.provider_base.get().strip()
+        model = self.provider_model.get().strip()
+        try:
+            validate_provider(base_url, model)
+        except DeepSeekError as exc:
+            messagebox.showwarning("AI 供应商配置无效", str(exc))
+            return
+
         item = self.config_data.providers[self.provider_index]
         item.update(
             {
                 "name": self.provider_name.get().strip() or "未命名",
-                "base_url": self.provider_base.get().strip(),
-                "model": self.provider_model.get().strip(),
+                "base_url": base_url,
+                "model": model,
                 "api_key": self.provider_key.get().strip(),
             }
         )
@@ -1323,11 +1466,18 @@ class ModernTranscriberApp(ctk.CTk):
                 dest = copy_cached_models()
                 self.set_status(f"模型已准备：{dest}")
             except Exception as exc:
-                self.set_status(f"模型复制失败：{exc}")
+                self.set_status(f"模型准备失败：{exc}")
 
         threading.Thread(target=worker, daemon=True).start()
 
     def on_close(self) -> None:
+        if self._recording_timeout_id:
+            try:
+                self.after_cancel(self._recording_timeout_id)
+            except Exception:
+                pass
+            self._recording_timeout_id = None
+        self.recorder.cancel()
         try:
             import keyboard
 
@@ -1339,9 +1489,20 @@ class ModernTranscriberApp(ctk.CTk):
                 self._tray_icon.stop()
             except Exception:
                 pass
+        release_single_instance()
         self.destroy()
 
 
 def run_modern_gui() -> None:
-    app = ModernTranscriberApp()
-    app.mainloop()
+    if not acquire_single_instance():
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showinfo("语言转写", "语言转写已经在运行，无需重复启动。")
+        root.destroy()
+        return
+    try:
+        app = ModernTranscriberApp()
+        app.mainloop()
+    except Exception:
+        release_single_instance()
+        raise
